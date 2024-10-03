@@ -1,0 +1,118 @@
+db_config:
+  db_type: "trino"      # Options: sqlite, trino, postgresql, mysql
+  host: "localhost"     # Database host
+  port: 8080            # Database port
+  user: "trino"         # Username for the database connection
+  catalog: "memory"     # Trino-specific catalog (optional for others)
+  schema: "default"     # Schema to use
+
+tests:
+  - name: "Employee Table Schema Check"
+    description: "Validate that the EMPLOYEE table has the correct columns and data types."
+    query: |
+      SELECT 
+          column_name, 
+          data_type 
+      FROM information_schema.columns
+      WHERE table_name = 'employee' AND table_schema = 'default'
+      ORDER BY column_name
+    expected_result: 
+      - ['employee_id', 'tinyint']
+      - ['first_name', 'varchar']
+      - ['job_title', 'varchar']
+      - ['last_name', 'varchar']
+      - ['manager_id', 'tinyint']
+
+  - name: "Foreign Key Integrity"
+    description: "Ensure all employee IDs in the EXPENSE table have corresponding entries in the EMPLOYEE table."
+    query: "SELECT COUNT(*) = 0 FROM memory.default.expense WHERE employee_id NOT IN (SELECT employee_id FROM memory.default.employee)"
+    expected_result: 
+      - [True]
+
+  - name: "Null Value Check"
+    description: "Ensure that no essential fields in the EMPLOYEE table have NULL values."
+    query: "SELECT COUNT(*) = 0 FROM memory.default.EMPLOYEE WHERE employee_id IS NULL OR manager_id IS NULL"
+    expected_result: 
+      - [True]
+
+  - name: "Expense Valid Range"
+    description: "Ensure that unit_price is positive and quantity is a valid number."
+    query: "SELECT COUNT(*) = 0 FROM memory.default.EXPENSE WHERE unit_price <= 0 OR quantity <= 0"
+    expected_result: 
+      - [True]
+
+  - name: "Supplier ID Uniqueness"
+    description: "Check that supplier_id is unique in the SUPPLIER table."
+    query: "SELECT COUNT(DISTINCT supplier_id) = COUNT(supplier_id) FROM memory.default.SUPPLIER"
+    expected_result: 
+      - [True]
+
+  - name: "Invoice Supplier Integrity"
+    description: "Ensure all supplier_ids in the INVOICE table are valid in the SUPPLIER table."
+    query: "SELECT COUNT(*) = 0 FROM memory.default.INVOICE WHERE supplier_id NOT IN (SELECT supplier_id FROM memory.default.SUPPLIER)"
+    expected_result: 
+      - [True]
+
+  - name: "Invoice Date Validity"
+    description: "Ensure that all due dates in the INVOICE table are valid."
+    query: "SELECT COUNT(*) = 0 FROM memory.default.INVOICE WHERE due_date < CURRENT_DATE"
+    expected_result: 
+      - [True]
+
+  - name: "Employee Table Structure"
+    description: "Check that the EMPLOYEE table has unique employee IDs."
+    query: "SELECT COUNT(DISTINCT employee_id) = COUNT(employee_id) AS employee_id_unique FROM memory.default.EMPLOYEE"
+    expected_result: 
+      - [True]
+
+  - name: "Total Employee Count"
+    description: "Validate that the total number of employees matches the expected count."
+    query: "SELECT COUNT(*) = 9 AS correct_employee_count FROM memory.default.EMPLOYEE"
+    expected_result: 
+      - [True]
+
+  - name: "Expense Amounts Validity"
+    description: "Ensure all expenses are associated with valid employee IDs."
+    query: "SELECT COUNT(*) = 0 FROM memory.default.EXPENSE WHERE employee_id NOT IN (SELECT employee_id FROM memory.default.EMPLOYEE)"
+    expected_result: 
+      - [True]
+      
+  - name: "Validate Manager Cycles"  # Expecting a failure
+    description: "Ensure that no cycles exist in the manager-employee hierarchy using the correct cycle detection logic."
+    query: |
+      WITH RECURSIVE manager_chain(employee_id, manager_id, chain) AS (
+          -- Base case: start with each employee
+          SELECT 
+              employee_id, 
+              manager_id,
+              ARRAY[CAST(employee_id AS VARCHAR)]
+          FROM 
+              memory.default.EMPLOYEE
+          
+          UNION ALL
+          
+          -- Recursive case: follow the manager chain
+          SELECT 
+              mc.employee_id,
+              e.manager_id,
+              array_distinct(mc.chain || ARRAY[CAST(e.employee_id AS VARCHAR)])
+          FROM 
+              manager_chain mc
+          JOIN 
+              memory.default.EMPLOYEE e ON mc.manager_id = e.employee_id
+          WHERE 
+              NOT contains(mc.chain, CAST(e.employee_id AS VARCHAR))
+      )
+
+      SELECT 
+          CAST(m.employee_id AS INTEGER) AS employee_id,
+          array_join(m.chain, ',') || ',' || CAST(m.employee_id AS VARCHAR) AS cycle
+      FROM 
+          manager_chain m
+      JOIN 
+          memory.default.EMPLOYEE e ON m.manager_id = e.employee_id
+      WHERE 
+          contains(m.chain, CAST(e.employee_id AS VARCHAR))
+      ORDER BY 
+          m.employee_id;
+    expected_result: []
